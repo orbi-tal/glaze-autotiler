@@ -17,6 +17,9 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray import MenuItem as item
 
+APP_NAME = "Glaze Autotiler"
+APP_VERSION = "1.0.1"
+
 
 class AutoTiler:
     """Main class for handling window tiling automation in Glaze WM."""
@@ -54,6 +57,9 @@ class AutoTiler:
         self.app_dir = os.path.dirname(os.path.abspath(__file__))
         self.res_dir = os.path.join(self.app_dir, "res")
         self.icon_path = os.path.join(self.res_dir, "icon.png")
+        self.icon = None  # Add this to store the icon reference
+        self.app_name = APP_NAME
+        self.version = APP_VERSION
 
     def pre_package_default_scripts(self):
         """Create default layout scripts if they don't exist."""
@@ -374,6 +380,7 @@ class AutoTiler:
             self.stop_script()
             self.current_script = layout_name
             self.update_config(layout_name)
+            self.update_tooltip()
             logging.info(f"Starting {layout_name} script...")
 
             if self.loop is None:
@@ -413,6 +420,7 @@ class AutoTiler:
             self.running_task = None
         self.current_script = None
         self.cancel_event.clear()
+        self.update_tooltip()
 
     def create_icon(self):
         """Create and configure the system tray icon."""
@@ -428,7 +436,11 @@ class AutoTiler:
                 draw = ImageDraw.Draw(image)
                 draw.rectangle((0, 0, 64, 64), fill=(0, 0, 0))
 
-            icon = pystray.Icon("Autotiling")
+            icon = pystray.Icon("Glaze Autotiling")
+            self.icon = icon
+
+            # Set initial tooltip
+            self.update_tooltip()
 
             def make_callback(layout_name):
                 return lambda: self.start_layout(layout_name)
@@ -467,6 +479,16 @@ class AutoTiler:
         self.stop_script()
         icon.stop()
         os._exit(0)
+
+    def update_tooltip(self):
+        """Update the system tray icon tooltip with current status."""
+        if self.icon:
+            layout_name = (
+                f"Current Layout: {self.layouts[self.current_script]['display_name']}"
+                if self.current_script
+                else "No layout active"
+            )
+            self.icon.title = f"{self.app_name} v{self.version}\n{layout_name}"
 
     def run_event_loop(self):
         """Run the asyncio event loop in a separate thread."""
