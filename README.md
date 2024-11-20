@@ -1,7 +1,7 @@
 # <img src="./src/res/icon_@128px.png" alt="Glaze Autotiler Logo" height="32px"/> Glaze Autotiler
 
 [![Build](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml/badge.svg)](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml)
-[![Latest Release](https://img.shields.io/github/v/release/orbi-tal/glaze-autotiler?include_prereleases&label=Latest+Release)]()
+[![Latest Release](https://img.shields.io/github/v/release/orbi-tal/glaze-autotiler?include_prereleases&label=Latest+Release)](https://github.com/orbi-tal/glaze-autotiler/releases)
 
 An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle layouts by default and is configurable with python!
 
