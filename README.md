@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 
 ### Using Pre-built Executable
-Download the latest release from the [releases page](https://github.com/yourusername/glaze-autotiler/releases).
+Download the latest release from the [releases page](https://github.com/orbi-tal/glaze-autotiler/releases).
 
 
 ## Building the Executable

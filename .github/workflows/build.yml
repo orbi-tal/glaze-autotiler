@@ -4,9 +4,12 @@ on:
   push:
     branches: [main]
     tags:
-      - "v*" # Will trigger on v1.0.0, v0.1.0 etc
+      - "v*"
   pull_request:
     branches: [main]
+
+permissions:
+  contents: write # This covers releases since they're repository contents
 
 jobs:
   build:
