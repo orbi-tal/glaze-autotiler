@@ -1,0 +1,7 @@
+{
+  "scripts": {
+    "lint": "python scripts/lint.py",
+    "format": "black . && isort .",
+    "check": "black --check . && isort --check-only . && flake8 && pylint src"
+  }
+}
