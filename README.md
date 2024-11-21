@@ -3,7 +3,7 @@
 [![Build](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml/badge.svg)](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/orbi-tal/glaze-autotiler?include_prereleases&label=Latest+Release)](https://github.com/orbi-tal/glaze-autotiler/releases)
 
-An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle layouts by default and is configurable with python!
+An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle layouts by default and is extensible with python!
 
 ## Installation
 
