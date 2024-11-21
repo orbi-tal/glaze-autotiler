@@ -23,6 +23,32 @@ jobs:
         with:
           python-version: "3.9"
 
+      - name: Bump version in files
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: bump_version
+        run: |
+          NEW_VERSION=${GITHUB_REF#refs/tags/}
+          echo "New version: $NEW_VERSION"
+
+          # Update version in main.py
+          sed -i "s/APP_VERSION = \".*\"/APP_VERSION = \"$NEW_VERSION\"/" Glaze-Autotiler/src/main.py
+
+          # Update version in manifest.xml
+          sed -i "s/version=\"[0-9.]*\"/version=\"$NEW_VERSION.0\"/" Glaze-Autotiler/manifest.xml
+
+          # Update version in file_version_info.txt
+          sed -i "s/filevers=(.*)/filevers=(${NEW_VERSION//./,},0)/" Glaze-Autotiler/file_version_info.txt
+          sed -i "s/prodvers=(.*)/prodvers=(${NEW_VERSION//./,},0)/" Glaze-Autotiler/file_version_info.txt
+          sed -i "s/StringStruct(u'FileVersion', u'.*')/StringStruct(u'FileVersion', u'$NEW_VERSION')/" Glaze-Autotiler/file_version_info.txt
+          sed -i "s/StringStruct(u'ProductVersion', u'.*')/StringStruct(u'ProductVersion', u'$NEW_VERSION')/" Glaze-Autotiler/file_version_info.txt
+
+          # Commit changes
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add Glaze-Autotiler/src/main.py Glaze-Autotiler/manifest.xml Glaze-Autotiler/file_version_info.txt
+          git commit -m "Bump version to $NEW_VERSION"
+          git push
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
