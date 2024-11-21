@@ -55,13 +55,13 @@ jobs:
           git commit -m "Bump version to $NEW_VERSION"
 
           # Determine the branch name
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            BRANCH_NAME=$(git branch -r --contains $GITHUB_SHA | grep -o 'origin/[^ ]*' | head -n 1 | sed 's|origin/||')
+          BRANCH_NAME=$(git branch -r --contains $GITHUB_SHA | grep -o 'origin/[^ ]*' | head -n 1 | sed 's|origin/||')
+          if [[ -z "$BRANCH_NAME" ]]; then
+            BRANCH_NAME="main"
           fi
 
           # Push the changes to the correct branch
-          git push origin HEAD:$BRANCH_NAME
+          git push origin HEAD:$BRANCH_NAME || { echo "Failed to push changes"; exit 1; }
 
       - name: Install dependencies
         run: |
