@@ -9,11 +9,11 @@ An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle l
 
 ### Autotiling
 
-https://github.com/user-attachments/assets/3ffcd3ea-00fb-4882-aeb5-056d53ecd1d4
+https://github.com/user-attachments/assets/a4f8ab7a-5e58-4986-b013-2ea081f34556
 
 ### Custom Layouts
 
-https://github.com/user-attachments/assets/2aab4c09-7221-4471-901e-cf2c3351a016
+https://github.com/user-attachments/assets/710f9a94-6deb-4700-882e-402a50adeadb
 
   
 ## Installation
