@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 from pystray import MenuItem as item
 
 APP_NAME = "Glaze Autotiler"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 
 class AutoTiler:
