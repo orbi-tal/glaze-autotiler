@@ -9,12 +9,13 @@ An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle l
 
 ### Autotiling
 
-![Automatic Window Tiling](assets/autotiling.mp4)
+https://github.com/user-attachments/assets/3ffcd3ea-00fb-4882-aeb5-056d53ecd1d4
 
 ### Custom Layouts
 
-![Custom Layouts](assets/custom-layouts.mp4)
+https://github.com/user-attachments/assets/2aab4c09-7221-4471-901e-cf2c3351a016
 
+  
 ## Installation
 
 ### From Source
