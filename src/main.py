@@ -5,6 +5,7 @@ This application provides automatic window tiling functionality.
 
 import argparse
 import asyncio
+import concurrent.futures
 import datetime
 import importlib.util
 import json
@@ -16,11 +17,15 @@ import threading
 import time
 
 import pystray
-from PIL import Image, ImageDraw
+import websockets
+from PIL import IcoImagePlugin, Image, ImageDraw, PngImagePlugin
 from pystray import MenuItem as item
+from websockets.exceptions import ConnectionClosedError
+
+from config_gui import ConfigGUI
 
 APP_NAME = "Glaze Autotiler"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 
 class AutoTiler:
@@ -67,6 +72,7 @@ class AutoTiler:
             os.path.getmtime(self.config_file) if os.path.exists(self.config_file) else 0
         )
         self.config_check_interval = 2  # Check every 2 seconds
+        self.shutting_down = False
 
     def pre_package_default_scripts(self):
         """Create default layout scripts if they don't exist."""
@@ -83,23 +89,23 @@ class AutoTiler:
                 "            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)\n"
                 "            json_response = json.loads(response)\n"
                 '            if json_response["messageType"] == "client_response":\n'
-                "                logging.debug(f\"Event subscription: {json_response['success']}\")\n"
+                "                logging.debug('Event subscription: %s', json_response['success'])\n"
                 '            elif json_response["messageType"] == "event_subscription":\n'
                 "                tiling_size = json_response['data']['managedWindow']['tilingSize']\n"
-                '                logging.debug(f"Tiling Size: {tiling_size}")\n'
+                "                logging.debug('Tiling Size: %s', tiling_size)\n"
                 "                if tiling_size is not None and tiling_size <= 0.5:\n"
                 "                    await websocket.send('c toggle-tiling-direction')\n"
                 "        except asyncio.TimeoutError:\n"
                 "            continue\n"
                 "        except Exception as e:\n"
-                '            logging.error(f"Dwindle script error: {e}")\n\n'
+                "            logging.error('Dwindle script error: %s', e)\n\n"
                 "async def run(cancel_event):\n"
                 '    uri = "ws://localhost:6123"\n'
                 "    try:\n"
                 "        async with websockets.connect(uri) as websocket:\n"
                 "            await dwindle_layout(websocket, cancel_event)\n"
                 "    except Exception as e:\n"
-                '        logging.error(f"Connection error: {e}")\n'
+                "        logging.error('Connection error: %s', e)\n"
             ),
             "master_stack.py": (
                 "import asyncio\n"
@@ -114,7 +120,7 @@ class AutoTiler:
                 "            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)\n"
                 "            json_response = json.loads(response)\n"
                 '            if json_response["messageType"] == "client_response":\n'
-                "                logging.debug(f\"Event subscription: {json_response['success']}\")\n"
+                "                logging.debug('Event subscription: %s', json_response['success'])\n"
                 '            elif json_response["messageType"] == "event_subscription":\n'
                 "                window_data = (\n"
                 "                    json_response['data'].get('managedWindow') or\n"
@@ -135,14 +141,14 @@ class AutoTiler:
                 "        except asyncio.TimeoutError:\n"
                 "            continue\n"
                 "        except Exception as e:\n"
-                '            logging.error(f"Master stack script error: {e}")\n\n'
+                "            logging.error('Master stack script error: %s', e)\n\n"
                 "async def run(cancel_event):\n"
                 '    uri = "ws://localhost:6123"\n'
                 "    try:\n"
                 "        async with websockets.connect(uri) as websocket:\n"
                 "            await master_stack_layout(websocket, cancel_event)\n"
                 "    except Exception as e:\n"
-                '        logging.error(f"Connection error: {e}")\n'
+                "        logging.error('Connection error: %s', e)\n"
             ),
         }
         missing_scripts = []
@@ -400,47 +406,62 @@ class AutoTiler:
         logging.info(f"Config updated with new layout: {new_layout}")
 
     def start_layout(self, layout_name):
-        """Start a specified layout.
+        """Start a specified layout."""
+        if self.shutting_down:
+            logging.warning("Cannot start layout during shutdown")
+            return False
 
-        Args:
-            layout_name (str): Name of the layout to start
-
-        Returns:
-            bool: True if layout started successfully, False otherwise
-        """
         if layout_name not in self.layouts:
             logging.error(f"Layout {layout_name} not found")
             return False
 
         if self.current_script != layout_name:
-            self.stop_script()
             self.current_script = layout_name
             self.update_config(layout_name)
             self.update_tooltip()
             logging.info(f"Starting {layout_name} script...")
 
+            if self.loop is None or self.loop.is_closed():
+                logging.error("Event loop is not initialized or is closed")
+                return False
+
+            return self._run_layout(layout_name)
+
+        return False
+
+    def _run_layout(self, layout_name):
+        """Run the layout script."""
+
+        async def run_layout():
+            try:
+                await self.layouts[layout_name]["module"].run(self.cancel_event)
+            except (
+                asyncio.CancelledError,
+                asyncio.TimeoutError,
+                ConnectionClosedError,  # Correct usage
+            ) as e:
+                logging.error(f"Error in {layout_name} layout: {e}")
+            finally:
+                logging.debug(f"Layout {layout_name} finished")
+
+        try:
+            # Cancel any existing task
+            if self.running_task and not self.running_task.done():
+                self.running_task.cancel()
+
+            # Ensure loop is not None
             if self.loop is None:
                 logging.error("Event loop is not initialized")
                 return False
 
-            async def run_layout():
-                try:
-                    await self.layouts[layout_name]["module"].run(self.cancel_event)
-                except asyncio.CancelledError:
-                    logging.info(f"Layout {layout_name} was cancelled")
-                except Exception as e:
-                    logging.error(f"Error in {layout_name} layout: {e}")
-                finally:
-                    logging.debug(f"Layout {layout_name} finished")
-
-            try:
-                self.running_task = asyncio.run_coroutine_threadsafe(run_layout(), self.loop)
-            except Exception as e:
-                logging.error(f"Error starting layout {layout_name}: {e}")
-                return False
+            # Create new task
+            future = asyncio.run_coroutine_threadsafe(run_layout(), self.loop)
+            self.running_task = future
 
             return True
-        return False
+        except Exception as e:
+            logging.error(f"Error starting layout {layout_name}: {e}")
+            return False
 
     def check_config_changes(self):
         """Check if config file has been modified and reload if necessary."""
@@ -555,16 +576,22 @@ class AutoTiler:
             return None
 
     def _create_control_menu_items(self):
-        """Create control menu items (Stop, Refresh, Quit).
-
-        Returns:
-            list: List of control menu items
-        """
+        """Create control menu items including Config GUI option."""
         return [
+            pystray.Menu.SEPARATOR,  # Add separator before control items
+            item("Configure", self.open_config_gui),
             item("Stop Script", self.stop_script),
             item("Refresh", self.refresh_menu),
             item("Quit", lambda: self.quit_app(self.icon)),
         ]
+
+    def open_config_gui(self):
+        """Open the configuration GUI."""
+        try:
+            gui = ConfigGUI(self)
+            gui.run()
+        except Exception as e:
+            logging.error(f"Error opening configuration GUI: {e}")
 
     def create_icon(self):
         """Create and configure the system tray icon."""
@@ -580,25 +607,31 @@ class AutoTiler:
                 draw = ImageDraw.Draw(image)
                 draw.rectangle((0, 0, 64, 64), fill=(0, 0, 0))
 
-            icon = pystray.Icon("Glaze Autotiling")
-            self.icon = icon
+            # Create menu before creating icon
+            menu_items = self._create_layout_menu_items()
+            menu_items.extend(self._create_control_menu_items())
+            menu = pystray.Menu(*menu_items)
+
+            # Create icon with menu
+            self.icon = pystray.Icon(name="Glaze Autotiling", icon=image, menu=menu)
 
             # Set initial tooltip
             self.update_tooltip()
 
-            # Create initial menu
-            self.refresh_menu()
-
-            icon.icon = image
             logging.info("Starting system tray icon")
 
             # Start config file monitoring in a separate thread
             monitor_thread = threading.Thread(target=self.monitor_config, daemon=True)
             monitor_thread.start()
 
-            icon.run()
+            # Run the icon
+            self.icon.run_detached()  # For newer versions of pystray
+            # If that doesn't work, try:
+            # self.icon.run()  # For older versions of pystray
+
         except Exception as e:
-            logging.error(f"Error creating tray icon: {e}")
+            logging.error(f"Error creating tray icon: %s", e, exc_info=True)
+            raise
 
     def monitor_config(self):
         """Monitor config file for changes."""
@@ -607,18 +640,7 @@ class AutoTiler:
                 self.check_config_changes()
                 time.sleep(self.config_check_interval)
             except Exception as e:
-                logging.error(f"Error in config monitor: {e}")
-
-    def quit_app(self, icon):
-        """Quit the application cleanly.
-
-        Args:
-            icon (pystray.Icon): System tray icon to remove
-        """
-        logging.info("Quitting the application...")
-        self.stop_script()
-        icon.stop()
-        os._exit(0)
+                logging.error(f"Error in config monitor: %s", e)
 
     def update_tooltip(self):
         """Update the system tray icon tooltip with current status."""
@@ -634,24 +656,245 @@ class AutoTiler:
                 logging.error("Error updating tooltip: %s", e)
                 self.icon.title = f"{self.app_name} v{self.version}\nError loading layout info"
 
-    def run_event_loop(self):
-        """Run the asyncio event loop in a separate thread."""
-        try:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            self.start_layout(self.default_layout)
-            self.loop.run_forever()
-        except Exception as e:
-            logging.error(f"Error in event loop: {e}")
-        finally:
-            if self.loop:
-                self.loop.close()
-
     def run(self):
         """Start the application and system tray icon."""
-        event_loop_thread = threading.Thread(target=self.run_event_loop, daemon=True)
-        event_loop_thread.start()
-        self.create_icon()
+        try:
+            # Create a single event loop
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
+            # Start event loop in a separate thread
+            event_loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+            event_loop_thread.start()
+
+            # Set up signal handlers
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, self._signal_handler)
+
+            # Create and run system tray icon
+            self.create_icon()
+
+        except Exception as e:
+            logging.error(f"Error in main run loop: %s", e, exc_info=True)
+            self._cleanup()
+            raise
+
+    def _run_event_loop(self):
+        """Improved event loop management with WebSocket availability handling."""
+        try:
+            logging.info("Initializing event loop...")
+            self._initialize_event_loop()
+
+            if self.shutting_down:
+                logging.info("Not starting event loop during shutdown")
+                return
+
+            self._start_default_layout_with_error_handling()
+
+            if self.loop is not None and not self.loop.is_closed():
+                try:
+                    logging.info("Starting event loop...")
+                    self.loop.run_forever()
+                except RuntimeError as e:
+                    logging.error(f"Event loop runtime error: {e}")
+
+        except Exception as e:
+            logging.error(f"Error in event loop: {e}", exc_info=True)
+        finally:
+            self._cleanup()
+
+    def _initialize_event_loop(self):
+        """Initialize the event loop."""
+        if self.loop is None:
+            self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+    def _start_default_layout_with_error_handling(self):
+        """Start the default layout with error handling."""
+        if self.default_layout:
+            try:
+                future = self._start_default_layout()
+                if future:
+                    try:
+                        future.result(timeout=10)
+                    except concurrent.futures.TimeoutError:
+                        logging.error("Timeout starting default layout")
+                    except Exception as e:
+                        logging.error(f"Error starting default layout: %s", e)
+            except Exception as e:
+                logging.error(f"Unexpected error starting default layout: %s", e)
+
+    def _start_default_layout(self):
+        """Start the default layout with improved thread-safe mechanisms."""
+        if not self.default_layout or self.loop is None:
+            return None
+
+        try:
+            # Use run_coroutine_threadsafe for thread-safe coroutine execution
+            future = asyncio.run_coroutine_threadsafe(
+                asyncio.wait_for(
+                    self._safe_start_layout(self.default_layout),
+                    timeout=10.0,  # Increased timeout with explicit timeout handling
+                ),
+                self.loop,
+            )
+            return future
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout starting default layout {self.default_layout}")
+        except Exception as e:
+            logging.error(f"Error scheduling default layout: {e}")
+        return None
+
+    async def _safe_start_layout(self, layout_name):
+        """Enhanced layout start method with improved WebSocket handling."""
+        try:
+            # Additional comprehensive WebSocket check
+            max_attempts = 3
+            for _ in range(max_attempts):
+                if self.shutting_down:
+                    logging.info("Shutdown in progress, aborting layout start")
+                    return
+            # If all attempts fail
+            logging.error("Could not establish WebSocket connection for layout %s", layout_name)
+
+            # Validate layout and module
+            if layout_name not in self.layouts:
+                logging.error("Layout %s not found", layout_name)
+                return
+
+            # Reset cancel event before starting
+            self.cancel_event.clear()
+
+            # Attempt to run the layout
+            module = self.layouts[layout_name]["module"]
+
+            # Pass the WebSocket connection if the module supports it
+            if hasattr(module, "run"):
+                # Assuming websocket_connection is not defined, remove the condition and call run with cancel_event only
+                await module.run(self.cancel_event)
+
+            else:
+                logging.error("Layout %s does not have a valid run method", layout_name)
+
+        except (
+            asyncio.CancelledError,
+            asyncio.TimeoutError,
+            ConnectionClosedError,  # Correct usage
+        ) as e:
+            logging.error("Error in event loop: %s", e, exc_info=True)
+
+    def quit_app(self, icon):
+        """Quit the application cleanly.
+
+        Args:
+            icon (pystray.Icon): System tray icon to remove
+        """
+        logging.info("Quitting the application...")
+        self.shutting_down = True  # Set shutdown flag
+        self.stop_script()
+        icon.stop()
+        self._cleanup()
+        os._exit(0)
+
+    def _cleanup(self):
+        """Enhanced cleanup method with better resource management."""
+        # Set shutdown flag
+        self.shutting_down = True
+
+        # Stop current script
+        self.stop_script()
+
+        # Close event loop
+        if self.loop and not self.loop.is_closed():
+            try:
+                self.loop.close()
+            except Exception as e:
+                logging.error(f"Error closing event loop: %s", e)
+
+        # Stop system tray icon
+        if hasattr(self, "icon") and self.icon:
+            try:
+                self.icon.stop()
+            except Exception as e:
+                logging.error(f"Error stopping system tray icon: %s", e)
+
+    async def _shutdown_loop(self):
+        """Async method to properly shut down the event loop."""
+        try:
+            if self.loop is None or self.loop.is_closed():
+                logging.warning("Event loop is None or already closed during shutdown")
+                return
+
+            pending = asyncio.all_tasks(self.loop)
+            if not pending:
+                logging.info("No pending tasks to cancel")
+                return
+
+            await self._cancel_pending_tasks(pending)
+
+            self.loop.stop()
+            logging.info("Event loop stopped")
+
+        except Exception as e:
+            logging.error(f"Unexpected error in _shutdown_loop: {e}")
+
+    async def _cancel_pending_tasks(self, pending):
+        """Cancel all pending tasks."""
+        for task in list(pending):
+            if task.done():
+                continue
+
+            try:
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    logging.warning(f"Task {task} did not cancel within timeout")
+                except asyncio.CancelledError:
+                    pass
+            except Exception as e:
+                logging.error(f"Error during task cancellation: {e}")
+
+    def _signal_handler(self, signum, _):
+        """Handle system signals for graceful shutdown."""
+        signal_name = signal.Signals(signum).name
+        logging.info(f"Received signal %s, initiating shutdown...", signal_name)
+
+        # Prevent multiple simultaneous shutdowns
+        if self.shutting_down:
+            return
+
+        self.shutting_down = True
+
+        def shutdown_callback():
+            try:
+                self.stop_script()
+                if hasattr(self, "icon") and self.icon:
+                    self.icon.stop()
+                if self.loop is not None and not self.loop.is_closed():
+                    self.loop.stop()
+                    self.loop.close()
+            except Exception as e:
+                logging.error(f"Error in shutdown callback: %s", e)
+
+        # Use thread-safe method or fallback
+        try:
+            if self.loop is not None and not self.loop.is_closed() and self.loop.is_running():
+                self.loop.call_soon_threadsafe(shutdown_callback)
+            else:
+                shutdown_callback()
+        except Exception as e:
+            logging.error(f"Error calling shutdown callback: %s", e)
+            shutdown_callback()
+
+    def _force_shutdown(self, timeout=5):
+        """Force shutdown if graceful shutdown doesn't complete."""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self.shutting_down:
+                os._exit(0)
+            time.sleep(0.1)
+        os._exit(1)
 
 
 def main():
@@ -665,19 +908,10 @@ def main():
     autotiler = AutoTiler(log_enabled=args.log)
     logging.info("Application started with arguments: %s", sys.argv)
 
-    def signal_handler(_, __):  # Use underscores for unused arguments
-        """Handle keyboard interrupt signal."""
-        logging.info("KeyboardInterrupt received, shutting down...")
-        if hasattr(autotiler, "stop_script"):
-            autotiler.stop_script()
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-
     try:
         autotiler.run()
     except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt received, shutting down...")
+        logging.info("KeyboardInterrupt received in main(), initiating shutdown...")
         if hasattr(autotiler, "stop_script"):
             autotiler.stop_script()
         os._exit(0)

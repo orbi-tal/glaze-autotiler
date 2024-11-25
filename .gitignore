@@ -21,6 +21,7 @@ wheels/
 *.egg
 tests/
 pytest.ini
+bak.main.py
 
 # Virtual Environment
 venv/
