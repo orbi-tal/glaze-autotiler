@@ -1,7 +1,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['src/main.py'],  # Your main Python script file
+    ['src/main.py', 'src/config_gui.py'],  # Your main Python script file
     pathex=[],
     binaries=[],
     datas=[
