@@ -21,6 +21,7 @@ wheels/
 *.egg
 tests/
 pytest.ini
+profile.*
 
 # Virtual Environment
 venv/

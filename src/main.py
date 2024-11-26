@@ -9,6 +9,7 @@ import datetime
 import importlib.util
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
@@ -16,7 +17,7 @@ import threading
 import time
 
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, PngImagePlugin, IcoImagePlugin
 from pystray import MenuItem as item
 
 APP_NAME = "Glaze Autotiler"
@@ -27,11 +28,7 @@ class AutoTiler:
     """Main class for handling window tiling automation in Glaze WM."""
 
     def __init__(self, log_enabled=False):
-        """Initialize the AutoTiler.
-
-        Args:
-            log_enabled (bool): Whether to enable detailed logging
-        """
+        """Initialize the AutoTiler."""
         user_profile = os.getenv("USERPROFILE")
         if user_profile is None:
             raise ValueError("USERPROFILE environment variable not found")
@@ -59,7 +56,7 @@ class AutoTiler:
         self.app_dir = os.path.dirname(os.path.abspath(__file__))
         self.res_dir = os.path.join(self.app_dir, "res")
         self.icon_path = os.path.join(self.res_dir, "icon.png")
-        self.icon = None  # Add this to store the icon reference
+        self.icon = None
         self.app_name = APP_NAME
         self.version = APP_VERSION
 
@@ -167,26 +164,33 @@ class AutoTiler:
 
     def setup_logging(self, log_enabled=False):
         """Configure logging settings."""
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        log_filename = f"autotiler_{current_time}.log"
-        log_file = os.path.join(self.log_dir, log_filename)
         log_level = logging.DEBUG if log_enabled else logging.INFO
 
-        logging.basicConfig(
-            filename=log_file,
-            level=log_level,
-            format="%(asctime)s - %(levelname)s - %(message)s",
-            force=True,
-        )
+        # Create a logger
+        logger = logging.getLogger()
+        logger.setLevel(log_level)
 
         if log_enabled:
-            console_handler = logging.StreamHandler()
+            # Create console handler and set level to debug
+            console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(log_level)
-            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            console_handler.setFormatter(formatter)
-            logging.getLogger().addHandler(console_handler)
+            console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            console_handler.setFormatter(console_formatter)
+            logger.addHandler(console_handler)
 
-        logging.info("Log file created: %s", log_filename)
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            log_filename = f"autotiler_{current_time}.log"
+            log_file = os.path.join(self.log_dir, log_filename)
+
+            file_handler = RotatingFileHandler(
+                log_file, maxBytes=10*1024*1024, backupCount=5
+            )
+            file_handler.setLevel(log_level)
+            file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+
+            logging.info("Log file created: %s", log_filename)
 
     def load_layouts(self):
         """Load available layout scripts from configured paths."""
@@ -202,13 +206,7 @@ class AutoTiler:
         logging.info("Available layouts: %s", list(self.layouts.keys()))
 
     def _load_single_layout(self, layout_name, layout_info, script_paths):
-        """Load a single layout script.
-
-        Args:
-            layout_name (str): Name of the layout
-            layout_info (dict): Layout configuration
-            script_paths (list): Paths to search for scripts
-        """
+        """Load a single layout script."""
         if not layout_info.get("enabled", True):
             logging.debug("Skipping disabled layout: %s", layout_name)
             return
@@ -228,15 +226,7 @@ class AutoTiler:
             logging.error("Error loading layout %s from %s: %s", layout_name, script_path, e)
 
     def _find_script_path(self, layout_name, script_paths):
-        """Find the script path for a layout.
-
-        Args:
-            layout_name (str): Name of the layout
-            script_paths (list): Paths to search for scripts
-
-        Returns:
-            str: Full path to script if found, None otherwise
-        """
+        """Find the script path for a layout."""
         script_filename = f"{layout_name}.py"
         for path in script_paths:
             if not os.path.exists(path):
@@ -247,15 +237,7 @@ class AutoTiler:
         return None
 
     def _load_layout_module(self, layout_name, script_path):
-        """Load a Python module from a script path.
-
-        Args:
-            layout_name (str): Name of the layout
-            script_path (str): Path to the script file
-
-        Returns:
-            module: Loaded Python module or None if failed
-        """
+        """Load a Python module from a script path."""
         spec = importlib.util.spec_from_file_location(layout_name, script_path)
         if spec is None:
             logging.error("Could not create spec for %s", layout_name)
@@ -270,14 +252,7 @@ class AutoTiler:
         return module
 
     def _register_layout(self, layout_name, layout_info, module, script_path):
-        """Register a layout in the layouts dictionary.
-
-        Args:
-            layout_name (str): Name of the layout
-            layout_info (dict): Layout configuration
-            module: Loaded Python module
-            script_path (str): Path to the script file
-        """
+        """Register a layout in the layouts dictionary."""
         self.layouts[layout_name] = {
             "module": module,
             "path": script_path,
@@ -287,11 +262,7 @@ class AutoTiler:
         logging.info("Successfully loaded layout: %s from %s", layout_name, script_path)
 
     def get_script_paths(self):
-        """Get list of paths to search for layout scripts.
-
-        Returns:
-            list: List of directory paths containing layout scripts
-        """
+        """Get list of paths to search for layout scripts."""
         if os.path.exists(self.config_file):
             with open(self.config_file, "r") as file:
                 config = json.load(file)
@@ -335,14 +306,7 @@ class AutoTiler:
         return current
 
     def _validate_default_layout(self, config):
-        """Validate and return default layout.
-
-        Args:
-            config (dict): Configuration dictionary
-
-        Returns:
-            str: Name of the validated default layout
-        """
+        """Validate and return default layout."""
         if config.get("default_layout", "dwindle") not in self.layouts:
             logging.warning(
                 f"Default layout {config.get('default_layout')} not found. "
@@ -352,12 +316,7 @@ class AutoTiler:
         return config.get("default_layout", "dwindle")
 
     def get_layout_config(self):
-        """Get layout-specific configuration from config file and creates default config if it doesn't exist.
-
-        Returns:
-            dict: Layout configuration dictionary
-        """
-        # Default layout config
+        """Get layout-specific configuration from config file and creates default config if it doesn't exist."""
         default_config = {
             "layouts": {
                 "dwindle": {"display_name": "Dwindle Layout", "enabled": True},
@@ -365,7 +324,6 @@ class AutoTiler:
             }
         }
 
-        # Create config file if it doesn't exist
         if not os.path.exists(self.config_file):
             try:
                 with open(self.config_file, "w") as file:
@@ -375,7 +333,6 @@ class AutoTiler:
                 logging.error(f"Error creating config file: {e}")
                 return default_config["layouts"]
 
-        # Read existing config
         try:
             with open(self.config_file, "r") as file:
                 config = json.load(file)
@@ -385,11 +342,7 @@ class AutoTiler:
             return default_config["layouts"]
 
     def update_config(self, new_layout):
-        """Update configuration with new default layout.
-
-        Args:
-            new_layout (str): Name of the new default layout
-        """
+        """Update configuration with new default layout."""
         config_data = {}
         if os.path.exists(self.config_file):
             with open(self.config_file, "r") as file:
@@ -400,14 +353,7 @@ class AutoTiler:
         logging.info(f"Config updated with new layout: {new_layout}")
 
     def start_layout(self, layout_name):
-        """Start a specified layout.
-
-        Args:
-            layout_name (str): Name of the layout to start
-
-        Returns:
-            bool: True if layout started successfully, False otherwise
-        """
+        """Start a specified layout."""
         if layout_name not in self.layouts:
             logging.error(f"Layout {layout_name} not found")
             return False
@@ -452,10 +398,9 @@ class AutoTiler:
             if current_mtime > self.config_last_modified:
                 logging.info("Config file changed, reloading...")
 
-                # Validate JSON before proceeding
                 try:
                     with open(self.config_file, "r") as f:
-                        json.load(f)  # Test if JSON is valid
+                        json.load(f)
 
                     self.config_last_modified = current_mtime
                     self.load_layouts()
@@ -463,7 +408,6 @@ class AutoTiler:
                     self.refresh_menu()
                 except json.JSONDecodeError as e:
                     logging.error(f"Invalid JSON in config file: {e}")
-                    # Don't update last_modified time so we'll retry on next check
 
         except Exception as e:
             logging.error(f"Error checking config changes: {e}")
@@ -475,7 +419,6 @@ class AutoTiler:
             self.cancel_event.set()
             if not self.running_task.done():
                 try:
-                    # Cancel the future directly
                     self.loop.call_soon_threadsafe(self.running_task.cancel)
                 except Exception as e:
                     logging.error(f"Error cancelling task: {e}")
@@ -501,11 +444,7 @@ class AutoTiler:
             logging.error("Error refreshing menu: %s", e)
 
     def _create_layout_menu_items(self):
-        """Create menu items for layouts.
-
-        Returns:
-            list: List of layout menu items
-        """
+        """Create menu items for layouts."""
         menu_items = []
         try:
             layout_config = self.get_layout_config()
@@ -521,16 +460,7 @@ class AutoTiler:
         return menu_items
 
     def _create_single_layout_item(self, layout_name, layout_info, layout_config):
-        """Create a menu item for a single layout.
-
-        Args:
-            layout_name (str): Name of the layout
-            layout_info (dict): Layout information
-            layout_config (dict): Layout configuration
-
-        Returns:
-            MenuItem: Created menu item or None if layout should be skipped
-        """
+        """Create a menu item for a single layout."""
         try:
             layout_config_info = layout_config.get(layout_name, {})
             if not layout_config_info.get("enabled", True):
@@ -555,16 +485,12 @@ class AutoTiler:
             return None
 
     def _create_control_menu_items(self):
-        """Create control menu items (Stop, Refresh, Quit).
-
-        Returns:
-            list: List of control menu items
-        """
-        return [
-            item("Stop Script", self.stop_script),
-            item("Refresh", self.refresh_menu),
-            item("Quit", lambda: self.quit_app(self.icon)),
-        ]
+            """Create control menu items (Stop, Refresh, Quit)."""
+            return [
+                item("Stop Script", self.stop_script),
+                item("Refresh", self.refresh_menu),
+                item("Quit", lambda: self.quit_app(self.icon)),
+            ]
 
     def create_icon(self):
         """Create and configure the system tray icon."""
@@ -610,11 +536,7 @@ class AutoTiler:
                 logging.error(f"Error in config monitor: {e}")
 
     def quit_app(self, icon):
-        """Quit the application cleanly.
-
-        Args:
-            icon (pystray.Icon): System tray icon to remove
-        """
+        """Quit the application cleanly."""
         logging.info("Quitting the application...")
         self.stop_script()
         icon.stop()
