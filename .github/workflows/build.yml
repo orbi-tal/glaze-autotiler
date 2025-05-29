@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +52,7 @@ jobs:
           if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
             mv dist/glaze-autotiler.exe dist/glaze-autotiler-console-${{ steps.get_version.outputs.version }}.exe
           else
-            mv dist/glaze-autotiler.exe dist/glaze-autotiler-console.exe
+            mv dist/glaze-autotiler.exe dist/glaze-autotiler-console-dev.exe
           fi
         shell: bash
 
@@ -62,24 +62,21 @@ jobs:
           if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
             mv dist/glaze-autotiler-noconsole.exe dist/glaze-autotiler-${{ steps.get_version.outputs.version }}.exe
           else
-            mv dist/glaze-autotiler-noconsole.exe dist/glaze-autotiler.exe
+            mv dist/glaze-autotiler-noconsole.exe dist/glaze-autotiler-dev.exe
           fi
         shell: bash
 
       - name: Upload console artifact
         uses: actions/upload-artifact@v4
         with:
-          name: glaze-autotiler-console-${{ runner.os }}
-          path: |
-            dist/glaze-autotiler-console*.exe
+          name: glaze-autotiler-console-${{ steps.get_version.outputs.version }}
+          path: dist/glaze-autotiler-console-${{ steps.get_version.outputs.version }}.exe
 
       - name: Upload no-console artifact
         uses: actions/upload-artifact@v4
         with:
-          name: glaze-autotiler-${{ runner.os }}
-          path: |
-            dist/glaze-autotiler-*.exe
-            !dist/glaze-autotiler-console*.exe
+          name: glaze-autotiler-${{ steps.get_version.outputs.version }}
+          path: dist/glaze-autotiler-${{ steps.get_version.outputs.version }}.exe
 
       - name: Get previous tag
         id: prev_tag
@@ -98,10 +95,10 @@ jobs:
             NEW_TAG=${GITHUB_REF#refs/tags/}
             echo "Previous tag: $PREV_TAG"
             echo "New tag: $NEW_TAG"
-            
+
             # Get commits affecting src/ directory
             COMMITS=$(git log --pretty=format:"%h - %s" $PREV_TAG..$NEW_TAG -- src/)
-            
+
             # Format release notes
             echo "notes<<EOF" >> $GITHUB_OUTPUT
             echo "## Changes since $PREV_TAG" >> $GITHUB_OUTPUT
