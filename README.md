@@ -40,6 +40,10 @@ pip install -r requirements.txt
 ### Using Pre-built Executable
 Download the latest release from the [releases page](https://github.com/orbi-tal/glaze-autotiler/releases).
 
+Two versions are available:
+- **glaze-autotiler** - Standard version without console window (recommended for daily use)
+- **glaze-autotiler-console** - Version with console window (recommended for debugging)
+
 
 ## Building the Executable
 
@@ -49,49 +53,81 @@ pip install pyinstaller
 ```
 
 2. Build the executable:
+
+For a version with console output (better for debugging):
 ```bash
 pyinstaller build.spec
 ```
 
+For a version without console window (cleaner for regular use):
+```bash
+pyinstaller build-noconsole.spec
+```
+
 The executable will be created in the `dist` directory.
+
+**Note:** The console version is recommended if you're experiencing issues, as it shows debug output directly.
+
+### Console vs. Non-Console Version
+
+- **Console Version** (`glaze-autotiler-console-[version].exe`): Shows debugging information directly in a console window. Use this if you're troubleshooting CPU usage or other issues.
+- **Non-Console Version** (`glaze-autotiler-[version].exe`): Runs without a visible console window. More suitable for regular use.
+
+When using the console version, debug arguments (-d, -l, -m) will show output directly in the console window.
 
 
 ## Usage
 
 Run the executable or use Python:
-
 ```bash
-glaze-autotiler
-# or
-python src/autotile/main.py
+# Standard version (no console)
+glaze-autotiler-[version].exe
+
+# Console version (for debugging)
+glaze-autotiler-console-[version].exe
+
+# Or run directly with Python
+python src/main.py
 ```
 
-You can select which layout to use from the tray icon menu.
-
-Use --log to enable verbose logging:
+Use -l or --log to enable verbose logging:
 ```bash
-glaze-autotiler --log
-# or
-python src/autotile/main.py --log
+# With console version
+glaze-autotiler-console-[version].exe -l
+
+# With standard version (output goes to log file only)
+glaze-autotiler-[version].exe -l
+
+# Or with Python
+python src/main.py --log
 ```
 
-Use --debug for even more detailed logging:
+Use -d or --debug for even more detailed logging:
 ```bash
-glaze-autotiler --debug
+# With console version (recommended for debugging)
+glaze-autotiler-console-[version].exe -d
+
+# With standard version (output goes to log file only)
+glaze-autotiler-[version].exe -d
 ```
 
-Additional command line options for further debugging:
+Additional command line options:
 ```bash
 # Enable CPU usage monitoring (requires psutil)
-glaze-autotiler --monitor-cpu
+glaze-autotiler-console-[version].exe -m
+# or
+glaze-autotiler-[version].exe --monitor-cpu
 
-# Enable garbage collection debugging for memory issues
-glaze-autotiler --gc-debug
+# Enable garbage collection debugging
+glaze-autotiler-console-[version].exe --gc-debug
 
 # Combine options
-glaze-autotiler --debug --monitor-cpu
+glaze-autotiler-console-[version].exe -d -m
+# or
+glaze-autotiler-[version].exe --debug --monitor-cpu
 ```
 
+**Note**: These command-line options will work with both Python and the console version of the executable. With the non-console version, debug output won't be visible but will still be written to log files.
 
 ## Configuration
 
@@ -155,6 +191,28 @@ isort --check-only .
 flake8
 pylint src
 ```
+
+## Troubleshooting
+
+### High CPU Usage
+If you're experiencing high CPU usage:
+
+1. Use the console version with monitoring enabled:
+```bash
+glaze-autotiler-console-[version].exe -d -m
+```
+
+2. Check for error messages in the console output
+3. Try each layout to determine if one specific layout is causing high CPU
+4. Verify your GlazeWM is running properly
+5. Check if CPU usage spikes only during certain operations
+
+### Missing Console Output
+If you're not seeing console output:
+
+1. Make sure you're using the console build (`glaze-autotiler-console-[version].exe`)
+2. Run with explicit debug flags: `glaze-autotiler-console-[version].exe -d`
+3. Check if the log files contain output even when console doesn't
 
 ## License
 

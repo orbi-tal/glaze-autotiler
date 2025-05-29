@@ -97,8 +97,7 @@ class AutoTiler:
                 '    await websocket.send("sub -e window_managed")\n'
                 "    while not cancel_event.is_set():\n"
                 "        try:\n"
-                "            # No timeout needed, recv() will wait for messages\n"
-                "            response = await websocket.recv()\n"
+                "            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)\n"
                 "            json_response = json.loads(response)\n"
                 '            if json_response["messageType"] == "client_response":\n'
                 "                logging.debug(f\"Event subscription: {json_response['success']}\")\n"
@@ -109,6 +108,9 @@ class AutoTiler:
                 '                    logging.debug(f"Tiling Size: {tiling_size}")\n'
                 "                    if tiling_size is not None and tiling_size <= 0.5:\n"
                 "                        await websocket.send('c toggle-tiling-direction')\n"
+                "        except asyncio.TimeoutError:\n"
+                "            # Just continue on timeout\n"
+                "            continue\n"
                 "        except asyncio.CancelledError:\n"
                 "            break\n"
                 "        except Exception as e:\n"
@@ -122,12 +124,17 @@ class AutoTiler:
                 "        try:\n"
                 "            async with websockets.connect(uri) as websocket:\n"
                 "                await dwindle_layout(websocket, cancel_event)\n"
+                "            # If we get here, connection closed normally\n"
+                "            if not cancel_event.is_set():\n"
+                "                logging.warning('Connection closed, reconnecting...')\n"
                 "        except Exception as e:\n"
                 '            logging.error(f"Connection error: {e}")\n'
-                "            # Sleep to prevent CPU spinning on repeated connection errors\n"
-                "            await asyncio.sleep(reconnect_delay)\n"
-                "            # Increase reconnect delay up to 30 seconds\n"
-                "            reconnect_delay = min(30, reconnect_delay * 1.5)\n"
+                "            if not cancel_event.is_set():\n"
+                "                # Sleep to prevent CPU spinning on repeated connection errors\n"
+                "                logging.info(f'Reconnecting in {reconnect_delay} seconds...')\n"
+                "                await asyncio.sleep(reconnect_delay)\n"
+                "                # Increase reconnect delay up to 10 seconds\n"
+                "                reconnect_delay = min(10, reconnect_delay * 1.5)\n"
             ),
             "master_stack.py": (
                 "import asyncio\n"
@@ -560,11 +567,24 @@ class AutoTiler:
 
     def _create_control_menu_items(self):
             """Create control menu items (Stop, Refresh, Quit)."""
-            return [
+            items = [
                 item("Stop Script", self.stop_script),
                 item("Refresh", self.refresh_menu),
-                item("Quit", lambda: self.quit_app(self.icon)),
             ]
+            
+            # Add CPU usage info if available
+            if self.psutil_available:
+                try:
+                    import psutil
+                    cpu_percent = psutil.Process(os.getpid()).cpu_percent(interval=0.1)
+                    items.append(item(f"CPU: {cpu_percent:.1f}%", lambda: None, enabled=False))
+                except:
+                    pass
+                    
+            # Always add quit at the end
+            items.append(item("Quit", lambda: self.quit_app(self.icon)))
+            
+            return items
 
     def create_icon(self):
         """Create and configure the system tray icon."""
@@ -619,7 +639,11 @@ class AutoTiler:
     def monitor_config(self):
         """Monitor config file for changes."""
         last_check_time = time.time()
-        
+    
+        # Log that monitoring has started
+        print(f"Config monitor started, checking every {self.config_check_interval}s", file=sys.stderr)
+        logging.info(f"Config monitor started, checking every {self.config_check_interval}s")
+    
         while True:
             try:
                 # Only check if enough time has passed since last check
@@ -627,12 +651,14 @@ class AutoTiler:
                 if current_time - last_check_time >= self.config_check_interval:
                     self.check_config_changes()
                     last_check_time = current_time
-                
+            
                 # Sleep for a shorter time but check less frequently
                 # This makes the thread more responsive to shutdown
                 time.sleep(1)
             except Exception as e:
-                logging.error(f"Error in config monitor: {e}")
+                error_msg = f"Error in config monitor: {e}"
+                print(error_msg, file=sys.stderr)
+                logging.error(error_msg)
                 # Sleep to prevent CPU spinning on repeated errors
                 time.sleep(2)
 
@@ -660,30 +686,36 @@ class AutoTiler:
                 # Build tooltip components
                 tooltip_parts = [f"{self.app_name} v{self.version}"]
                 
-                # Add layout info
                 if self.current_script and self.current_script in self.layouts:
                     display_name = self.layouts[self.current_script]["display_name"]
                     tooltip_parts.append(f"Current Layout: {display_name}")
                 else:
                     tooltip_parts.append("No layout active")
-                
+            
                 # Add CPU usage info if monitoring is enabled and psutil is available
                 if self.psutil_available and self.cpu_monitor_running:
                     try:
                         import psutil
                         cpu_percent = psutil.Process(os.getpid()).cpu_percent(interval=0.1)
                         tooltip_parts.append(f"CPU: {cpu_percent:.1f}%")
-                        
+                    
+                        # Also log to console for easier debugging
+                        logging.debug(f"Current CPU usage: {cpu_percent:.1f}%")
+                    
                         if self.high_cpu_detected:
                             tooltip_parts.append("⚠ HIGH CPU USAGE DETECTED ⚠")
-                    except:
-                        # Don't add CPU info if there's an error
+                            logging.warning("High CPU usage detected!")
+                    except Exception as e:
+                        # Log the error but continue
+                        logging.debug(f"Error getting CPU info: {e}")
                         pass
-                
+            
                 # Set the tooltip with all parts
                 self.icon.title = "\n".join(tooltip_parts)
             except (KeyError, AttributeError) as e:
-                logging.error("Error updating tooltip: %s", e)
+                error_msg = f"Error updating tooltip: {e}"
+                print(error_msg, file=sys.stderr)
+                logging.error(error_msg)
                 self.icon.title = f"{self.app_name} v{self.version}\nError loading layout info"
 
     def run_event_loop(self):
@@ -753,12 +785,17 @@ class AutoTiler:
 
     def _update_tooltip_periodically(self):
         """Update the tooltip periodically to show current CPU usage."""
+        logging.info("Tooltip updater started")
+        print("Tooltip updater thread started", file=sys.stderr)
+        
         while self.cpu_monitor_running:
             try:
                 self.update_tooltip()
                 time.sleep(2)  # Update every 2 seconds
             except Exception as e:
-                logging.error(f"Error updating tooltip: {e}")
+                error_msg = f"Error updating tooltip: {e}"
+                print(error_msg, file=sys.stderr)
+                logging.error(error_msg)
                 time.sleep(5)  # Longer pause on error
     
     def monitor_cpu_usage(self):
@@ -767,20 +804,29 @@ class AutoTiler:
         This function requires psutil to be installed.
         """
         if not self.cpu_monitor_running or not self.psutil_available:
+            print("CPU monitoring disabled (psutil not available or not requested)", file=sys.stderr)
             return
             
         try:
             import psutil
             process = psutil.Process(os.getpid())
+            print(f"CPU monitoring started for PID {os.getpid()}", file=sys.stderr)
             
             # Variables to track consecutive high CPU readings
             high_cpu_count = 0
             consecutive_threshold = 3  # Number of consecutive readings to confirm high CPU
             
+            # Print directly to stderr for visibility
+            print(f"CPU monitoring started for PID {os.getpid()}", file=sys.stderr)
+            logging.info(f"CPU monitoring started for PID {os.getpid()}")
+            
             while self.cpu_monitor_running:
                 try:
                     # Get CPU usage as a percentage - shorter interval for more accuracy
                     cpu_percent = process.cpu_percent(interval=1)
+                    
+                    # Output every reading in debug mode
+                    logging.debug(f"Current CPU usage: {cpu_percent:.1f}%")
                     
                     # Update the high CPU detected flag based on consecutive readings
                     if cpu_percent > 25:
@@ -789,15 +835,19 @@ class AutoTiler:
                             if not self.high_cpu_detected:
                                 self.high_cpu_detected = True
                                 self.update_tooltip()  # Update the tooltip to show high CPU
+                                # Print to stderr to make sure it's visible
+                                print(f"⚠ HIGH CPU DETECTED: {cpu_percent:.1f}%", file=sys.stderr)
                     else:
                         high_cpu_count = 0
                         if self.high_cpu_detected:
                             self.high_cpu_detected = False
                             self.update_tooltip()  # Update tooltip to remove high CPU warning
+                            print("CPU usage returned to normal", file=sys.stderr)
                     
                     # Log based on severity
                     if cpu_percent > 50:
                         logging.warning(f"Critical CPU usage: {cpu_percent}%")
+                        print(f"CRITICAL CPU USAGE: {cpu_percent:.1f}%", file=sys.stderr)
                         
                         # Get thread info for debugging
                         active_threads = threading.enumerate()
@@ -816,9 +866,11 @@ class AutoTiler:
                     time.sleep(sleep_time)
                 except Exception as e:
                     logging.error(f"Error in CPU monitoring: {e}")
+                    print(f"Error in CPU monitoring: {e}", file=sys.stderr)
                     time.sleep(10)  # Longer pause on error
         except Exception as e:
             logging.error(f"CPU monitoring failed to start: {e}")
+            print(f"CPU monitoring failed to start: {e}", file=sys.stderr)
 
     def run(self):
         """Start the application and system tray icon."""
@@ -826,15 +878,19 @@ class AutoTiler:
         event_loop_thread = threading.Thread(target=self.run_event_loop, daemon=True, name="EventLoopThread")
         event_loop_thread.start()
         
+        # Log that we're starting
+        logging.info("Starting event loop thread...")
+        
         # Start config monitor in a daemon thread with a name for easier debugging
         self.config_monitor_thread = threading.Thread(
             target=self.monitor_config, daemon=True, name="ConfigMonitorThread"
         )
         self.config_monitor_thread.start()
+        logging.info("Starting config monitor thread...")
         
-        # Start CPU monitor in a daemon thread if psutil is available and monitoring is enabled
-        # Start CPU monitor in a daemon thread if psutil is available
-        if self.psutil_available:
+        # Start CPU monitor in a daemon thread if psutil is available and monitoring is requested
+        if self.psutil_available and 'args' in globals() and args.monitor_cpu:
+            print("Starting CPU monitoring...", file=sys.stderr)
             self.cpu_monitor_running = True
             self.cpu_monitor_thread = threading.Thread(
                 target=self.monitor_cpu_usage, 
@@ -843,7 +899,7 @@ class AutoTiler:
             )
             self.cpu_monitor_thread.start()
             logging.info("CPU monitoring started (psutil available)")
-            
+                
             # Update tooltip more frequently when CPU monitoring is active
             threading.Thread(
                 target=self._update_tooltip_periodically,
@@ -852,7 +908,12 @@ class AutoTiler:
             ).start()
         else:
             self.cpu_monitor_running = False
-            logging.info("CPU monitoring disabled (psutil not available)")
+            if args.monitor_cpu and not self.psutil_available:
+                msg = "CPU monitoring requested but psutil not available. Install with: pip install psutil"
+                print(msg, file=sys.stderr)
+                logging.warning(msg)
+            else:
+                logging.info("CPU monitoring disabled")
         
         # Force garbage collection before creating the system tray icon
         gc.collect()
@@ -863,18 +924,21 @@ class AutoTiler:
 
 def main():
     """Entry point for the application."""
+    # Print directly to stderr to ensure visibility in console
+    print("Glaze Autotiler starting...", file=sys.stderr)
+    
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--log", action="store_true", help="Enable logging to console and log file."
+        "-l", "--log", action="store_true", help="Enable logging to console and log file."
     )
     parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode with additional logging."
+        "-d", "--debug", action="store_true", help="Enable debug mode with additional logging."
     )
     parser.add_argument(
         "--gc-debug", action="store_true", help="Enable garbage collection debug output."
     )
     parser.add_argument(
-        "--monitor-cpu", action="store_true", help="Enable CPU usage monitoring (requires psutil)."
+        "-m", "--monitor-cpu", action="store_true", help="Enable CPU usage monitoring (requires psutil)."
     )
     args = parser.parse_args()
 
@@ -904,13 +968,41 @@ def main():
             logging.warning("tracemalloc module not available for memory profiling")
     elif args.monitor_cpu and not psutil_available:
         logging.warning("CPU monitoring requested but psutil is not installed. Install with: pip install psutil")
-        
-    autotiler = AutoTiler(log_enabled=args.log or args.debug)
-    logging.info("Application started with arguments: %s", sys.argv)
+    
+    # Force stderr to be unbuffered before anything else
+    try:
+        sys.stderr.reconfigure(write_through=True)
+    except AttributeError:
+        # Python < 3.7 doesn't have reconfigure
+        import os
+        try:
+            sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 0)  # 0 = unbuffered
+        except ValueError:
+            # In some environments, unbuffered mode might not be supported
+            sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 1)  # 1 = line buffered
+
+    # Set up basic console logging before creating AutoTiler
+    log_enabled = args.log or args.debug
+    log_level = logging.DEBUG if args.debug else (logging.INFO if log_enabled else logging.WARNING)
+    
+    # Configure root logger to ensure output appears
+    handlers = [logging.StreamHandler(sys.stderr)]
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=handlers,
+        force=True
+    )
     
     if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+        print("Debug mode enabled - verbose logging activated", file=sys.stderr)
         logging.debug("Debug mode enabled")
+    elif log_enabled:
+        print("Logging enabled", file=sys.stderr)
+        
+    autotiler = AutoTiler(log_enabled=log_enabled)
+    logging.info("Application started with arguments: %s", sys.argv)
+    print(f"Application started with arguments: {sys.argv}", file=sys.stderr)
 
     def signal_handler(_, __):  # Use underscores for unused arguments
         """Handle keyboard interrupt signal."""
@@ -941,4 +1033,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Ensure stderr output is flushed immediately
+    try:
+        sys.stderr.reconfigure(write_through=True)
+        sys.stdout.reconfigure(write_through=True)
+    except AttributeError:
+        # Python < 3.7 doesn't have reconfigure
+        import os
+        try:
+            sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 0)  # 0 = unbuffered
+            sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)  # 0 = unbuffered
+        except ValueError:
+            # In some environments, unbuffered mode might not be supported
+            sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 1)  # 1 = line buffered
+            sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)  # 1 = line buffered
+    
+    # Print directly to ensure visibility in the executable
+    print("Glaze Autotiler is launching...", file=sys.stderr)
+    print("Output should appear in this console window", file=sys.stderr)
+    
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        error_msg = f"FATAL ERROR: {e}"
+        print(error_msg, file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        input("Press Enter to exit...")  # Keep window open on error
+        sys.exit(1)

@@ -7,6 +7,7 @@ on:
       - "v*"
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,7 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
+    
     steps:
       - uses: actions/checkout@v4
 
@@ -32,40 +33,93 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller psutil
 
-      - name: Build executable
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=dev
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Build console executable
         run: |
           pyinstaller build.spec
+          if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            mv dist/glaze-autotiler.exe dist/glaze-autotiler-console-${{ steps.get_version.outputs.version }}.exe
+          else
+            mv dist/glaze-autotiler.exe dist/glaze-autotiler-console.exe
+          fi
+        shell: bash
 
-      - name: Upload artifact
+      - name: Build no-console executable
+        run: |
+          pyinstaller build-noconsole.spec
+          if [[ "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            mv dist/glaze-autotiler-noconsole.exe dist/glaze-autotiler-${{ steps.get_version.outputs.version }}.exe
+          else
+            mv dist/glaze-autotiler-noconsole.exe dist/glaze-autotiler.exe
+          fi
+        shell: bash
+
+      - name: Upload console artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glaze-autotiler-console-${{ runner.os }}
+          path: |
+            dist/glaze-autotiler-console*.exe
+
+      - name: Upload no-console artifact
         uses: actions/upload-artifact@v4
         with:
           name: glaze-autotiler-${{ runner.os }}
-          path: dist/glaze-autotiler.exe
+          path: |
+            dist/glaze-autotiler-*.exe
+            !dist/glaze-autotiler-console*.exe
 
       - name: Get previous tag
         id: prev_tag
-        run: echo "::set-output name=prev_tag::$(git describe --tags --abbrev=0 HEAD^)"
+        run: |
+          # Get previous tag or default to v0.0.0 if none exists
+          git fetch --prune --unshallow
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo 'v0.0.0')
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Generate release notes
         id: release_notes
         run: |
           PREV_TAG=${{ steps.prev_tag.outputs.prev_tag }}
-          NEW_TAG=${GITHUB_REF#refs/tags/}
-          echo "Previous tag: $PREV_TAG"
-          echo "New tag: $NEW_TAG"
-          COMMITS=$(git log $PREV_TAG..$NEW_TAG --pretty=format:"%h - %s" -- src/main.py)
-          echo "Release notes: $COMMITS"
-          echo "::set-output name=notes::$COMMITS"
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            NEW_TAG=${GITHUB_REF#refs/tags/}
+            echo "Previous tag: $PREV_TAG"
+            echo "New tag: $NEW_TAG"
+            
+            # Get commits affecting src/ directory
+            COMMITS=$(git log --pretty=format:"%h - %s" $PREV_TAG..$NEW_TAG -- src/)
+            
+            # Format release notes
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            echo "## Changes since $PREV_TAG" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "$COMMITS" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
         shell: bash
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/glaze-autotiler.exe
+          files: |
+            dist/glaze-autotiler-${{ steps.get_version.outputs.version }}.exe
+            dist/glaze-autotiler-console-${{ steps.get_version.outputs.version }}.exe
           body: ${{ steps.release_notes.outputs.notes }}
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

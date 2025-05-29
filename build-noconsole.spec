@@ -1,3 +1,5 @@
+# -*- mode: python ; coding: utf-8 -*-
+
 block_cipher = None
 
 a = Analysis(
@@ -31,14 +33,14 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='glaze-autotiler',
+    name='glaze-autotiler-noconsole',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # Console enabled for debug output
+    console=False,  # Console disabled for regular use
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
