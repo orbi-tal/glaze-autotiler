@@ -6,6 +6,7 @@ This application provides automatic window tiling functionality.
 import argparse
 import asyncio
 import datetime
+import gc
 import importlib.util
 import json
 import logging
@@ -15,6 +16,9 @@ import signal
 import sys
 import threading
 import time
+import traceback
+
+# For CPU monitoring - will be imported conditionally if available
 
 import pystray
 from PIL import Image, ImageDraw, PngImagePlugin, IcoImagePlugin
@@ -29,9 +33,10 @@ class AutoTiler:
 
     def __init__(self, log_enabled=False):
         """Initialize the AutoTiler."""
-        user_profile = os.getenv("USERPROFILE")
+        # Use HOME for Linux/Mac compatibility along with USERPROFILE for Windows
+        user_profile = os.getenv("USERPROFILE") or os.getenv("HOME")
         if user_profile is None:
-            raise ValueError("USERPROFILE environment variable not found")
+            raise ValueError("Neither USERPROFILE nor HOME environment variable found")
         self.config_dir = os.path.join(user_profile, ".config", "glaze-autotiler")
         self.config_file = os.path.join(self.config_dir, "config.json")
         self.scripts_dir = os.path.join(self.config_dir, "scripts")
@@ -47,7 +52,22 @@ class AutoTiler:
         self.loop = None
         self.layouts = {}
         self.running_task = None
+        self.config_monitor_thread = None
+        self.cpu_monitor_thread = None
+        self.cpu_monitor_running = False
+        self.high_cpu_detected = False
+        self.psutil_available = False
+        
+        # Check if psutil is available
+        try:
+            import psutil
+            self.psutil_available = True
+        except ImportError:
+            self.psutil_available = False
 
+        # Pre-emptive garbage collection to start with a clean slate
+        gc.collect()
+        
         self.pre_package_default_scripts()
         self.setup_logging(log_enabled)
         self.load_layouts()
@@ -63,7 +83,7 @@ class AutoTiler:
         self.config_last_modified = (
             os.path.getmtime(self.config_file) if os.path.exists(self.config_file) else 0
         )
-        self.config_check_interval = 2  # Check every 2 seconds
+        self.config_check_interval = 5  # Increased from 2 to 5 seconds
 
     def pre_package_default_scripts(self):
         """Create default layout scripts if they don't exist."""
@@ -77,26 +97,37 @@ class AutoTiler:
                 '    await websocket.send("sub -e window_managed")\n'
                 "    while not cancel_event.is_set():\n"
                 "        try:\n"
-                "            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)\n"
+                "            # No timeout needed, recv() will wait for messages\n"
+                "            response = await websocket.recv()\n"
                 "            json_response = json.loads(response)\n"
                 '            if json_response["messageType"] == "client_response":\n'
                 "                logging.debug(f\"Event subscription: {json_response['success']}\")\n"
                 '            elif json_response["messageType"] == "event_subscription":\n'
-                "                tiling_size = json_response['data']['managedWindow']['tilingSize']\n"
-                '                logging.debug(f"Tiling Size: {tiling_size}")\n'
-                "                if tiling_size is not None and tiling_size <= 0.5:\n"
-                "                    await websocket.send('c toggle-tiling-direction')\n"
-                "        except asyncio.TimeoutError:\n"
-                "            continue\n"
+                "                # Check if managedWindow exists in the data\n"
+                "                if 'managedWindow' in json_response['data']:\n"
+                "                    tiling_size = json_response['data']['managedWindow']['tilingSize']\n"
+                '                    logging.debug(f"Tiling Size: {tiling_size}")\n'
+                "                    if tiling_size is not None and tiling_size <= 0.5:\n"
+                "                        await websocket.send('c toggle-tiling-direction')\n"
+                "        except asyncio.CancelledError:\n"
+                "            break\n"
                 "        except Exception as e:\n"
-                '            logging.error(f"Dwindle script error: {e}")\n\n'
+                '            logging.error(f"Dwindle script error: {e}")\n'
+                "            # Sleep to prevent CPU spinning on repeated errors\n"
+                "            await asyncio.sleep(0.5)\n\n"
                 "async def run(cancel_event):\n"
                 '    uri = "ws://localhost:6123"\n'
-                "    try:\n"
-                "        async with websockets.connect(uri) as websocket:\n"
-                "            await dwindle_layout(websocket, cancel_event)\n"
-                "    except Exception as e:\n"
-                '        logging.error(f"Connection error: {e}")\n'
+                "    reconnect_delay = 2\n"
+                "    while not cancel_event.is_set():\n"
+                "        try:\n"
+                "            async with websockets.connect(uri) as websocket:\n"
+                "                await dwindle_layout(websocket, cancel_event)\n"
+                "        except Exception as e:\n"
+                '            logging.error(f"Connection error: {e}")\n'
+                "            # Sleep to prevent CPU spinning on repeated connection errors\n"
+                "            await asyncio.sleep(reconnect_delay)\n"
+                "            # Increase reconnect delay up to 30 seconds\n"
+                "            reconnect_delay = min(30, reconnect_delay * 1.5)\n"
             ),
             "master_stack.py": (
                 "import asyncio\n"
@@ -108,7 +139,8 @@ class AutoTiler:
                 '    await websocket.send("sub -e focus_changed")\n'
                 "    while not cancel_event.is_set():\n"
                 "        try:\n"
-                "            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)\n"
+                "            # No timeout needed, recv() will wait for messages\n"
+                "            response = await websocket.recv()\n"
                 "            json_response = json.loads(response)\n"
                 '            if json_response["messageType"] == "client_response":\n'
                 "                logging.debug(f\"Event subscription: {json_response['success']}\")\n"
@@ -120,26 +152,35 @@ class AutoTiler:
                 "                if not window_data:\n"
                 "                    continue\n\n"
                 "                tiling_size = window_data.get('tilingSize')\n"
-                '                await websocket.send("query tiling-direction")\n'
-                "                direction_response = await websocket.recv()\n"
-                "                direction_json = json.loads(direction_response)\n"
-                "                current_direction = direction_json.get('data', {}).get('tilingDirection')\n\n"
                 "                if tiling_size is not None:\n"
+                "                    # Query only when we have a valid tiling_size to reduce traffic\n"
+                '                    await websocket.send("query tiling-direction")\n'
+                "                    direction_response = await websocket.recv()\n"
+                "                    direction_json = json.loads(direction_response)\n"
+                "                    current_direction = direction_json.get('data', {}).get('tilingDirection')\n\n"
                 '                    if tiling_size > 0.5 and current_direction != "horizontal":\n'
                 "                        await websocket.send('c set-tiling-direction horizontal')\n"
                 '                    elif tiling_size <= 0.5 and current_direction != "vertical":\n'
                 "                        await websocket.send('c set-tiling-direction vertical')\n"
-                "        except asyncio.TimeoutError:\n"
-                "            continue\n"
+                "        except asyncio.CancelledError:\n"
+                "            break\n"
                 "        except Exception as e:\n"
-                '            logging.error(f"Master stack script error: {e}")\n\n'
+                '            logging.error(f"Master stack script error: {e}")\n'
+                "            # Sleep to prevent CPU spinning on repeated errors\n"
+                "            await asyncio.sleep(0.5)\n\n"
                 "async def run(cancel_event):\n"
                 '    uri = "ws://localhost:6123"\n'
-                "    try:\n"
-                "        async with websockets.connect(uri) as websocket:\n"
-                "            await master_stack_layout(websocket, cancel_event)\n"
-                "    except Exception as e:\n"
-                '        logging.error(f"Connection error: {e}")\n'
+                "    reconnect_delay = 2\n"
+                "    while not cancel_event.is_set():\n"
+                "        try:\n"
+                "            async with websockets.connect(uri) as websocket:\n"
+                "                await master_stack_layout(websocket, cancel_event)\n"
+                "        except Exception as e:\n"
+                '            logging.error(f"Connection error: {e}")\n'
+                "            # Sleep to prevent CPU spinning on repeated connection errors\n"
+                "            await asyncio.sleep(reconnect_delay)\n"
+                "            # Increase reconnect delay up to 30 seconds\n"
+                "            reconnect_delay = min(30, reconnect_delay * 1.5)\n"
             ),
         }
         missing_scripts = []
@@ -371,18 +412,29 @@ class AutoTiler:
 
             async def run_layout():
                 try:
-                    await self.layouts[layout_name]["module"].run(self.cancel_event)
+                    # Set a timeout for the layout to prevent infinite loops or hangs
+                    await asyncio.wait_for(
+                        self.layouts[layout_name]["module"].run(self.cancel_event),
+                        timeout=None  # No timeout, but we can handle cancellation
+                    )
                 except asyncio.CancelledError:
                     logging.info(f"Layout {layout_name} was cancelled")
                 except Exception as e:
                     logging.error(f"Error in {layout_name} layout: {e}")
+                    # Add a sleep to prevent CPU spinning on repeated errors
+                    await asyncio.sleep(1)
                 finally:
                     logging.debug(f"Layout {layout_name} finished")
 
             try:
+                # Cancel any previous task first to ensure clean start
+                if self.running_task and not self.running_task.done():
+                    self.running_task.cancel()
+                    
                 self.running_task = asyncio.run_coroutine_threadsafe(run_layout(), self.loop)
             except Exception as e:
                 logging.error(f"Error starting layout {layout_name}: {e}")
+                self.current_script = None  # Reset current script on failure
                 return False
 
             return True
@@ -416,16 +468,38 @@ class AutoTiler:
         """Stop the currently running layout script."""
         logging.info("Stopping current script...")
         if self.running_task is not None and self.loop is not None:
+            # Signal the script to stop
             self.cancel_event.set()
+            
+            # Give a short grace period for tasks to clean up
+            time.sleep(0.1)
+            
+            # Force cancel if still running
             if not self.running_task.done():
                 try:
                     self.loop.call_soon_threadsafe(self.running_task.cancel)
+                    # Wait briefly for the cancellation to take effect
+                    start_time = time.time()
+                    while not self.running_task.done() and time.time() - start_time < 1.0:
+                        time.sleep(0.1)
+                        
+                    if not self.running_task.done():
+                        logging.warning("Task didn't cancel properly, may cause resource leaks")
+                        # Get a traceback for debugging
+                        if logging.getLogger().level <= logging.DEBUG:
+                            for thread in threading.enumerate():
+                                logging.debug(f"Active thread: {thread.name}")
                 except Exception as e:
                     logging.error(f"Error cancelling task: {e}")
+                    logging.debug(f"Cancellation error details: {traceback.format_exc()}")
+            
             self.running_task = None
+        
         self.current_script = None
         self.cancel_event.clear()
         self.update_tooltip()
+        # Force garbage collection to clean up resources
+        gc.collect()
 
     def refresh_menu(self):
         """Refresh the system tray menu items."""
@@ -495,9 +569,11 @@ class AutoTiler:
     def create_icon(self):
         """Create and configure the system tray icon."""
         try:
-            # Try to load the custom icon
+            # Try to load the custom icon - use with statement to ensure file is closed properly
             if os.path.exists(self.icon_path):
-                image = Image.open(self.icon_path)
+                with Image.open(self.icon_path) as img:
+                    # Create a copy to ensure the file handle is released
+                    image = img.copy()
                 logging.info(f"Loaded custom icon from: {self.icon_path}")
             else:
                 # Fallback to generated icon if custom icon is not found
@@ -505,6 +581,11 @@ class AutoTiler:
                 image = Image.new("RGB", (64, 64), color=(255, 255, 255))
                 draw = ImageDraw.Draw(image)
                 draw.rectangle((0, 0, 64, 64), fill=(0, 0, 0))
+                del draw  # Explicitly release the drawing context
+
+            # Set a smaller icon size to reduce memory usage
+            if max(image.size) > 64:
+                image.thumbnail((64, 64), Image.Resampling.BICUBIC)
 
             icon = pystray.Icon("Glaze Autotiling")
             self.icon = icon
@@ -515,43 +596,92 @@ class AutoTiler:
             # Create initial menu
             self.refresh_menu()
 
+            # Force garbage collection before starting the icon
+            gc.collect()
+
             icon.icon = image
             logging.info("Starting system tray icon")
 
-            # Start config file monitoring in a separate thread
-            monitor_thread = threading.Thread(target=self.monitor_config, daemon=True)
-            monitor_thread.start()
-
+            # We don't need to start a new monitor thread here, we already start one in run()
+            # This prevents duplicate monitoring threads which can cause high CPU usage
+            
             icon.run()
         except Exception as e:
             logging.error(f"Error creating tray icon: {e}")
+            # Clean up in case of error
+            if hasattr(self, 'icon') and self.icon:
+                try:
+                    self.icon.stop()
+                except:
+                    pass
+                self.icon = None
 
     def monitor_config(self):
         """Monitor config file for changes."""
+        last_check_time = time.time()
+        
         while True:
             try:
-                self.check_config_changes()
-                time.sleep(self.config_check_interval)
+                # Only check if enough time has passed since last check
+                current_time = time.time()
+                if current_time - last_check_time >= self.config_check_interval:
+                    self.check_config_changes()
+                    last_check_time = current_time
+                
+                # Sleep for a shorter time but check less frequently
+                # This makes the thread more responsive to shutdown
+                time.sleep(1)
             except Exception as e:
                 logging.error(f"Error in config monitor: {e}")
+                # Sleep to prevent CPU spinning on repeated errors
+                time.sleep(2)
 
     def quit_app(self, icon):
         """Quit the application cleanly."""
-        logging.info("Quitting the application...")
+        logging.info("Quitting application...")
         self.stop_script()
+        
+        # Signal CPU monitoring to stop if running
+        self.cpu_monitor_running = False
+        if self.cpu_monitor_thread and self.cpu_monitor_thread.is_alive():
+            self.cpu_monitor_thread.join(timeout=1.0)
+        
+        # Force garbage collection before exit
+        gc.collect()
+        
+        icon.visible = False
         icon.stop()
-        os._exit(0)
+        sys.exit(0)  # Use sys.exit instead of os._exit for cleaner shutdown
 
     def update_tooltip(self):
         """Update the system tray icon tooltip with current status."""
         if self.icon:
             try:
+                # Build tooltip components
+                tooltip_parts = [f"{self.app_name} v{self.version}"]
+                
+                # Add layout info
                 if self.current_script and self.current_script in self.layouts:
                     display_name = self.layouts[self.current_script]["display_name"]
-                    layout_name = f"Current Layout: {display_name}"
+                    tooltip_parts.append(f"Current Layout: {display_name}")
                 else:
-                    layout_name = "No layout active"
-                self.icon.title = f"{self.app_name} v{self.version}\n{layout_name}"
+                    tooltip_parts.append("No layout active")
+                
+                # Add CPU usage info if monitoring is enabled and psutil is available
+                if self.psutil_available and self.cpu_monitor_running:
+                    try:
+                        import psutil
+                        cpu_percent = psutil.Process(os.getpid()).cpu_percent(interval=0.1)
+                        tooltip_parts.append(f"CPU: {cpu_percent:.1f}%")
+                        
+                        if self.high_cpu_detected:
+                            tooltip_parts.append("⚠ HIGH CPU USAGE DETECTED ⚠")
+                    except:
+                        # Don't add CPU info if there's an error
+                        pass
+                
+                # Set the tooltip with all parts
+                self.icon.title = "\n".join(tooltip_parts)
             except (KeyError, AttributeError) as e:
                 logging.error("Error updating tooltip: %s", e)
                 self.icon.title = f"{self.app_name} v{self.version}\nError loading layout info"
@@ -561,18 +691,173 @@ class AutoTiler:
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
+            
+            # Add a periodic CPU usage check task (optional)
+            async def check_cpu_usage():
+                while True:
+                    try:
+                        # Check if psutil is available and use it if so
+                        if self.psutil_available:
+                            import psutil
+                            process = psutil.Process(os.getpid())
+                            cpu_percent = process.cpu_percent(interval=1)
+                            if cpu_percent > 20:  # Arbitrary threshold
+                                logging.warning(f"High CPU usage detected: {cpu_percent}%")
+                                self.high_cpu_detected = True
+                                
+                                # Get top consuming functions if possible
+                                # This requires the tracemalloc module to be enabled
+                                try:
+                                    import tracemalloc
+                                    if tracemalloc.is_tracing():
+                                        snapshot = tracemalloc.take_snapshot()
+                                        top_stats = snapshot.statistics('lineno')
+                                        logging.warning("Top 5 memory allocations:")
+                                        for stat in top_stats[:5]:
+                                            logging.warning(f"{stat}")
+                                except (ImportError, AttributeError):
+                                    logging.debug("tracemalloc not available for memory profiling")
+                            else:
+                                self.high_cpu_detected = False
+                        else:
+                            # Skip CPU monitoring if psutil is not available
+                            pass
+                    except Exception as e:
+                        logging.error(f"Error in CPU usage check: {e}")
+                    await asyncio.sleep(10)  # Check every 10 seconds
+            
+            # Uncomment if psutil is added to requirements
+            # self.loop.create_task(check_cpu_usage())
+            
+            # Start the default layout
             self.start_layout(self.default_layout)
+            
+            # Run the event loop with improved error handling
             self.loop.run_forever()
         except Exception as e:
             logging.error(f"Error in event loop: {e}")
         finally:
-            if self.loop:
-                self.loop.close()
+            if self.loop and not self.loop.is_closed():
+                # Cancel all running tasks
+                try:
+                    for task in asyncio.all_tasks(self.loop):
+                        task.cancel()
+                    
+                    # Run the event loop until all tasks are canceled
+                    self.loop.run_until_complete(asyncio.sleep(0.1))
+                except Exception as e:
+                    logging.error(f"Error cleaning up tasks: {e}")
+                finally:
+                    self.loop.close()
+                    gc.collect()  # Force garbage collection after closing loop
+
+    def _update_tooltip_periodically(self):
+        """Update the tooltip periodically to show current CPU usage."""
+        while self.cpu_monitor_running:
+            try:
+                self.update_tooltip()
+                time.sleep(2)  # Update every 2 seconds
+            except Exception as e:
+                logging.error(f"Error updating tooltip: {e}")
+                time.sleep(5)  # Longer pause on error
+    
+    def monitor_cpu_usage(self):
+        """Monitor CPU usage and log if it exceeds thresholds.
+        
+        This function requires psutil to be installed.
+        """
+        if not self.cpu_monitor_running or not self.psutil_available:
+            return
+            
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            
+            # Variables to track consecutive high CPU readings
+            high_cpu_count = 0
+            consecutive_threshold = 3  # Number of consecutive readings to confirm high CPU
+            
+            while self.cpu_monitor_running:
+                try:
+                    # Get CPU usage as a percentage - shorter interval for more accuracy
+                    cpu_percent = process.cpu_percent(interval=1)
+                    
+                    # Update the high CPU detected flag based on consecutive readings
+                    if cpu_percent > 25:
+                        high_cpu_count += 1
+                        if high_cpu_count >= consecutive_threshold:
+                            if not self.high_cpu_detected:
+                                self.high_cpu_detected = True
+                                self.update_tooltip()  # Update the tooltip to show high CPU
+                    else:
+                        high_cpu_count = 0
+                        if self.high_cpu_detected:
+                            self.high_cpu_detected = False
+                            self.update_tooltip()  # Update tooltip to remove high CPU warning
+                    
+                    # Log based on severity
+                    if cpu_percent > 50:
+                        logging.warning(f"Critical CPU usage: {cpu_percent}%")
+                        
+                        # Get thread info for debugging
+                        active_threads = threading.enumerate()
+                        logging.warning(f"Active threads: {len(active_threads)}")
+                        for thread in active_threads:
+                            logging.warning(f"Thread: {thread.name}, Daemon: {thread.daemon}")
+                        
+                        # Suggest garbage collection
+                        gc.collect()
+                    elif cpu_percent > 25:
+                        logging.info(f"High CPU usage: {cpu_percent}%")
+                    
+                    # Adaptive sleep - sleep longer when CPU usage is lower
+                    # This reduces the monitoring overhead when things are running smoothly
+                    sleep_time = 5 if cpu_percent < 15 else 2
+                    time.sleep(sleep_time)
+                except Exception as e:
+                    logging.error(f"Error in CPU monitoring: {e}")
+                    time.sleep(10)  # Longer pause on error
+        except Exception as e:
+            logging.error(f"CPU monitoring failed to start: {e}")
 
     def run(self):
         """Start the application and system tray icon."""
-        event_loop_thread = threading.Thread(target=self.run_event_loop, daemon=True)
+        # Start event loop in a daemon thread
+        event_loop_thread = threading.Thread(target=self.run_event_loop, daemon=True, name="EventLoopThread")
         event_loop_thread.start()
+        
+        # Start config monitor in a daemon thread with a name for easier debugging
+        self.config_monitor_thread = threading.Thread(
+            target=self.monitor_config, daemon=True, name="ConfigMonitorThread"
+        )
+        self.config_monitor_thread.start()
+        
+        # Start CPU monitor in a daemon thread if psutil is available and monitoring is enabled
+        # Start CPU monitor in a daemon thread if psutil is available
+        if self.psutil_available:
+            self.cpu_monitor_running = True
+            self.cpu_monitor_thread = threading.Thread(
+                target=self.monitor_cpu_usage, 
+                daemon=True, 
+                name="CPUMonitorThread"
+            )
+            self.cpu_monitor_thread.start()
+            logging.info("CPU monitoring started (psutil available)")
+            
+            # Update tooltip more frequently when CPU monitoring is active
+            threading.Thread(
+                target=self._update_tooltip_periodically,
+                daemon=True,
+                name="TooltipUpdateThread"
+            ).start()
+        else:
+            self.cpu_monitor_running = False
+            logging.info("CPU monitoring disabled (psutil not available)")
+        
+        # Force garbage collection before creating the system tray icon
+        gc.collect()
+        
+        # Create system tray icon in main thread
         self.create_icon()
 
 
@@ -582,17 +867,61 @@ def main():
     parser.add_argument(
         "--log", action="store_true", help="Enable logging to console and log file."
     )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with additional logging."
+    )
+    parser.add_argument(
+        "--gc-debug", action="store_true", help="Enable garbage collection debug output."
+    )
+    parser.add_argument(
+        "--monitor-cpu", action="store_true", help="Enable CPU usage monitoring (requires psutil)."
+    )
     args = parser.parse_args()
 
-    autotiler = AutoTiler(log_enabled=args.log)
+    # Set garbage collection thresholds to be more aggressive
+    gc.set_threshold(700, 10, 5)  # Default is (700, 10, 10)
+    
+    if args.gc_debug:
+        gc.set_debug(gc.DEBUG_STATS | gc.DEBUG_LEAK)
+    
+    # Check if psutil is available for CPU monitoring
+    psutil_available = False
+    try:
+        import psutil
+        psutil_available = True
+        logging.info("psutil available for CPU monitoring")
+    except ImportError:
+        logging.info("psutil not available - CPU monitoring will be disabled")
+    
+    # Enable memory profiling with tracemalloc if monitoring CPU
+    if args.monitor_cpu and psutil_available:
+        # Try to enable tracemalloc for memory profiling
+        try:
+            import tracemalloc
+            tracemalloc.start()
+            logging.info("Memory profiling enabled with tracemalloc")
+        except ImportError:
+            logging.warning("tracemalloc module not available for memory profiling")
+    elif args.monitor_cpu and not psutil_available:
+        logging.warning("CPU monitoring requested but psutil is not installed. Install with: pip install psutil")
+        
+    autotiler = AutoTiler(log_enabled=args.log or args.debug)
     logging.info("Application started with arguments: %s", sys.argv)
+    
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Debug mode enabled")
 
     def signal_handler(_, __):  # Use underscores for unused arguments
         """Handle keyboard interrupt signal."""
         logging.info("KeyboardInterrupt received, shutting down...")
         if hasattr(autotiler, "stop_script"):
             autotiler.stop_script()
-        os._exit(0)
+        # Force garbage collection before exit
+        gc.collect()
+        # Use a clean exit instead of os._exit
+        # to allow for proper resource cleanup
+        sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -602,7 +931,13 @@ def main():
         logging.info("KeyboardInterrupt received, shutting down...")
         if hasattr(autotiler, "stop_script"):
             autotiler.stop_script()
-        os._exit(0)
+        # Force garbage collection before exit
+        gc.collect()
+        sys.exit(0)
+    except Exception as e:
+        logging.error(f"Unhandled exception in main: {e}")
+        gc.collect()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ https://github.com/user-attachments/assets/a4f8ab7a-5e58-4986-b013-2ea081f34556
 
 https://github.com/user-attachments/assets/710f9a94-6deb-4700-882e-402a50adeadb
 
-  
+
 ## Installation
 
 ### From Source
@@ -59,11 +59,14 @@ The executable will be created in the `dist` directory.
 ## Usage
 
 Run the executable or use Python:
+
 ```bash
 glaze-autotiler
 # or
 python src/autotile/main.py
 ```
+
+You can select which layout to use from the tray icon menu.
 
 Use --log to enable verbose logging:
 ```bash
@@ -72,7 +75,22 @@ glaze-autotiler --log
 python src/autotile/main.py --log
 ```
 
-You can select which layout to use from the tray icon menu.
+Use --debug for even more detailed logging:
+```bash
+glaze-autotiler --debug
+```
+
+Additional command line options for further debugging:
+```bash
+# Enable CPU usage monitoring (requires psutil)
+glaze-autotiler --monitor-cpu
+
+# Enable garbage collection debugging for memory issues
+glaze-autotiler --gc-debug
+
+# Combine options
+glaze-autotiler --debug --monitor-cpu
+```
 
 
 ## Configuration
