@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="glaze-autotiler",
-    version="1.0.1",
+    version="1.0.4",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     include_package_data=True,

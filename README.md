@@ -3,7 +3,7 @@
 [![Build](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml/badge.svg)](https://github.com/orbi-tal/glaze-autotiler/actions/workflows/build.yml)
 [![Latest Release](https://img.shields.io/github/v/release/orbi-tal/glaze-autotiler?include_prereleases&label=Latest+Release)](https://github.com/orbi-tal/glaze-autotiler/releases)
 
-An auto-tiling tray application for GlazeWM, provides Master-Stack and Dwindle layouts by default and is extensible with python!
+An auto-tiling tray application for GlazeWM. Includes Dwindle and Master-Stack layouts by default, and is easily extended with Python. The tray icon and menu are built directly on the Win32 API.
 
 ## Features
 
@@ -36,13 +36,12 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-
-### Using Pre-built Executable
+### Using a Pre-built Executable
 Download the latest release from the [releases page](https://github.com/orbi-tal/glaze-autotiler/releases).
 
-Two versions are available:
-- **glaze-autotiler** - Standard version without console window (recommended for daily use)
-- **glaze-autotiler-console** - Version with console window (recommended for debugging)
+Two builds are available:
+- **glaze-autotiler**:no console window, for daily use
+- **glaze-autotiler-console**: console window, for debugging
 
 
 ## Building the Executable
@@ -53,170 +52,101 @@ pip install pyinstaller
 ```
 
 2. Build the executable:
-
-For a version with console output (better for debugging):
 ```bash
-pyinstaller build.spec
+pyinstaller build.spec              # console build, for debugging
+pyinstaller build-noconsole.spec    # no console window, for regular use
 ```
 
-For a version without console window (cleaner for regular use):
-```bash
-pyinstaller build-noconsole.spec
-```
+The executable is created in the `dist` directory. Both builds automatically link `file_version_info.txt` and `manifest.xml` for Windows properties and High-DPI support. 
 
-The executable will be created in the `dist` directory.
-
-**Note:** The console version is recommended if you're experiencing issues, as it shows debug output directly.
-
-### Console vs. Non-Console Version
-
-- **Console Version** (`glaze-autotiler-console-[version].exe`): Shows debugging information directly in a console window. Use this if you're troubleshooting CPU usage or other issues.
-- **Non-Console Version** (`glaze-autotiler-[version].exe`): Runs without a visible console window. More suitable for regular use.
-
-When using the console version, debug arguments (-d, -l, -m) will show output directly in the console window.
+If something's not working right, build and run the console version first, its output is much easier to read than digging through log files.
 
 
 ## Usage
 
-Run the executable or use Python:
+Run the executable, or `python src/main.py`.
+
+| Flag | Effect |
+|---|---|
+| `-l`, `--log` | Enable logging |
+| `-d`, `--debug` | Enable more verbose logging than `-l` |
+| `-m`, `--monitor-cpu` | Enable CPU usage monitoring |
+| `--gc-debug` | Enable garbage collection debug output |
+
+These work the same regardless of how you're running it, and can be combined, e.g.:
 ```bash
-# Standard version (no console)
-glaze-autotiler-[version].exe
-
-# Console version (for debugging)
-glaze-autotiler-console-[version].exe
-
-# Or run directly with Python
-python src/main.py
-```
-
-Use -l or --log to enable verbose logging:
-```bash
-# With console version
-glaze-autotiler-console-[version].exe -l
-
-# With standard version (output goes to log file only)
-glaze-autotiler-[version].exe -l
-
-# Or with Python
-python src/main.py --log
-```
-
-Use -d or --debug for even more detailed logging:
-```bash
-# With console version (recommended for debugging)
-glaze-autotiler-console-[version].exe -d
-
-# With standard version (output goes to log file only)
-glaze-autotiler-[version].exe -d
-```
-
-Additional command line options:
-```bash
-# Enable CPU usage monitoring (requires psutil)
-glaze-autotiler-console-[version].exe -m
-# or
-glaze-autotiler-[version].exe --monitor-cpu
-
-# Enable garbage collection debugging
-glaze-autotiler-console-[version].exe --gc-debug
-
-# Combine options
 glaze-autotiler-console-[version].exe -d -m
 # or
-glaze-autotiler-[version].exe --debug --monitor-cpu
+python src/main.py --debug --monitor-cpu
 ```
 
-**Note**: These command-line options will work with both Python and the console version of the executable. With the non-console version, debug output won't be visible but will still be written to log files.
+With the console build, `-l`/`-d` output prints directly to the console. With the no-console build, it's written instead to a timestamped log file under `%USERPROFILE%\.config\glaze-autotiler\logs\`.
+
+**Note:** without `-l`/`-d`, most log output isn't recorded anywhere. Warnings and errors are the exception, those always get written to `autotiler_errors.log` in the same logs folder, so that's the first place to check if something's misbehaving even with logging off.
+
 
 ## Configuration
 
-Configuration files and default tiling scripts are stored in `%USERPROFILE%\.config\glaze-autotiler\`.
+Config and the default layout scripts live in `%USERPROFILE%\.config\glaze-autotiler\`. A `config.json` is created there automatically on first run, with `dwindle` and `master_stack` already enabled.
 
-To add a custom layout you can add to the config.json file:
+To add a custom layout, add it under `"layouts"` in `config.json`:
 ```json
 {
-  "custom_layout": {
+  "layouts": {
+    "custom_layout": {
       "display_name": "My Custom Layout",
       "enabled": true
+    }
   }
 }
 ```
-You can also add a custom script path in:
+A custom layout is any Python file that defines an async `run(cancel_event)` function; see `dwindle.py` or `master_stack.py` in the scripts folder for a working example. By default, scripts are loaded from the scripts folder above; you can add more locations, or point directly at a script elsewhere, via `"script_paths"`:
 ```json
+{
   "script_paths": [
-      "C:\\Users\\YourUsername\\.config\\glaze-autotiler\\scripts",
-      "C:\\Custom\\Script\\Path"
+    "C:\\Users\\YourUsername\\.config\\glaze-autotiler\\scripts",
+    "C:\\Custom\\Script\\Path"
   ]
+}
 ```
+
 
 ## Development
 
-### Setup Linting
+Tools used: `black` (formatting), `isort` (import sorting), `flake8` (style), `pylint` (analysis), `pytest` (testing). `pyproject.toml` also configures `pyright`/`basedpyright` (`extraPaths = ["src"]`) so editors correctly resolve `main.py`'s sibling import of `tray_win32.py`.
 
-This project uses several linting and formatting tools:
-- `black` for code formatting
-- `isort` for import sorting
-- `flake8` for style guide enforcement
-- `pylint` for code analysis
-
-To set up the development environment:
-
+### Setup environment
 ```bash
-# Create and activate virtual environment
+# Create and activate a virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install development dependencies
+# Install dev dependencies and pre-commit hooks
 pip install -r requirements-dev.txt
-
-# Install pre-commit hooks
-pip install pre-commit
 pre-commit install
 ```
 
-### Running Linters
-
+### Static Analysis & Formatting
 ```bash
-# Run all linters
-python scripts/lint.py
-
-# Format code
-black .
-isort .
-
-# Check code without formatting
-black --check .
-isort --check-only .
-flake8
-pylint src
+python scripts/lint.py                                     # run all linters
+black . && isort .                                          # format code
+black --check . && isort --check-only . && flake8 && pylint src   # check without formatting
 ```
 
-## Troubleshooting
+### Testing
+Tests run on Windows, Linux, and macOS. Dynamic mocks inside `tests/conftest.py` intercept native Win32/Websocket API calls so tests don't crash on non-Windows environments.
 
-### High CPU Usage
-If you're experiencing high CPU usage:
-
-1. Use the console version with monitoring enabled:
 ```bash
-glaze-autotiler-console-[version].exe -d -m
+python -m pytest -v                     # run all tests
+python -m pytest -v -s                  # run tests and print debug console output
 ```
+Use `python -m pytest`, not a bare `pytest` or the `py` launcher, either can silently resolve to a different interpreter than your activated venv, missing the dev dependencies installed there (you'll see `pytest-asyncio` etc. absent from the reported `plugins:` line if this happens).
 
-2. Check for error messages in the console output
-3. Try each layout to determine if one specific layout is causing high CPU
-4. Verify your GlazeWM is running properly
-5. Check if CPU usage spikes only during certain operations
-
-### Missing Console Output
-If you're not seeing console output:
-
-1. Make sure you're using the console build (`glaze-autotiler-console-[version].exe`)
-2. Run with explicit debug flags: `glaze-autotiler-console-[version].exe -d`
-3. Check if the log files contain output even when console doesn't
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
 
 ## Acknowledgements
 lars-berger for [GlazeWM](https://github.com/glzr-io/glazewm).\

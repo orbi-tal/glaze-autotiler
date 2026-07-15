@@ -19,14 +19,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-tests/
-pytest.ini
 profile.*
 
 # Virtual Environment
 venv/
 env/
 ENV/
+.env
 
 # IDE
 .idea/

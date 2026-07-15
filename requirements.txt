@@ -1,9 +1,12 @@
-websockets==11.0.3
-Pillow==10.0.0
-pystray==0.19.4
-pyinstaller==5.13.0
+websockets>=11.0.3
+pyinstaller==6.21.0
 
-# Optional dependencies for performance monitoring
-# Uncomment these if you want CPU usage monitoring
-# psutil==5.9.5
-# memory-profiler==0.61.0
+# Required: build.spec / build-noconsole.spec declare psutil as a
+# PyInstaller hiddenimport (needed for CPU monitoring), so it must be
+# installed in the build environment or the PyInstaller build fails.
+psutil==7.2.2
+
+# Note: Pillow and pystray were removed. The system tray icon and menu are
+# now implemented directly on ctypes (stdlib) in tray_win32.py -- see that
+# module's docstring for why. No image-processing dependency is needed
+# since icon.ico is loaded directly via the Win32 LoadImage API.
