@@ -150,6 +150,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgements
 lars-berger for [GlazeWM](https://github.com/glzr-io/glazewm).\
-ParasiteDelta for the [inspiration](https://github.com/ParasiteDelta/GAT-GWM).\
-burgr033 for the original [autotiler script](https://github.com/burgr033/GlazeWM-autotiling-python).\
+ParasiteDelta for the [inspiration](https://github.com/Lilith-In-Starlight/GAT-GWM).\
+burgr033 for the original [autotiler script](https://github.com/cat-ione/GlazeWM-autotiling-python).\
 Opposite34 for the [Dwindle script](https://gist.github.com/Opposite34/f3a487d940e9fb968d01f7e30969fbd1).
