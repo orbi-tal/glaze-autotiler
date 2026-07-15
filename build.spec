@@ -1,13 +1,18 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+from PyInstaller.building.build_main import Analysis
+from PyInstaller.building.api import PYZ, EXE
+
 block_cipher = None
 
 a = Analysis(
-    ['src/main.py'],  # Your main Python script file
+    ['src/main.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('src/res', 'res')  # This copies src/res folder to res in the executable
+        ('src/res', 'res')
     ],
-    hiddenimports=['websockets', 'psutil'],  # Added psutil for CPU monitoring
+    hiddenimports=['websockets', 'psutil'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -31,17 +36,19 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='glaze-autotiler',
+    name='glaze-autotiler-console',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # Console enabled for debug output
+    console=True,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='src/res/icon.png'
+    icon='src/res/icon.ico',
+    version='file_version_info.txt',
+    manifest='manifest.xml'
 )
